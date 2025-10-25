@@ -1,28 +1,53 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Header } from "@/components/layout/Header";
 import { Home } from "@/pages/Home";
 import { Browse } from "@/pages/Browse";
 import { Profile } from "@/pages/Profile";
-import {
-  allMockMovies,
-  mockUserData,
-  getMoviesByIds,
-  filterMoviesByGenre,
-  searchMovies,
-} from "@/lib/mockData";
 import type { Movie } from "@/types/movie";
+import {
+  getTopRatedMovies,
+  getTrendingMovies,
+  searchAndFilterMovies,
+  discoverMovies,
+} from "@/services/tmdb";
 
 type View = "home" | "browse" | "profile";
 
 function App() {
   const [currentView, setCurrentView] = useState<View>("home");
-  const [searchResults, setSearchResults] = useState<Movie[]>(allMockMovies);
-  const [watchlistIds, setWatchlistIds] = useState<number[]>(
-    mockUserData.watchlistMovieIds,
-  );
+  const [recommendedMovies, setRecommendedMovies] = useState<Movie[]>([]);
+  const [trendingMovies, setTrendingMovies] = useState<Movie[]>([]);
+  const [searchResults, setSearchResults] = useState<Movie[]>([]);
+  const [watchlistIds, setWatchlistIds] = useState<number[]>([]);
   const [ratedMovies, setRatedMovies] = useState<Map<number, number>>(
     new Map(),
   );
+  const [loading, setLoading] = useState(true);
+  const [searchLoading, setSearchLoading] = useState(false);
+
+  // Load initial data on mount
+  useEffect(() => {
+    loadInitialData();
+  }, []);
+
+  const loadInitialData = async () => {
+    setLoading(true);
+    try {
+      // Fetch recommended (top rated) and trending movies in parallel
+      const [recommended, trending] = await Promise.all([
+        getTopRatedMovies(1),
+        getTrendingMovies("week"),
+      ]);
+
+      setRecommendedMovies(recommended);
+      setTrendingMovies(trending);
+      setSearchResults(recommended); // Initialize browse page with top rated
+    } catch (error) {
+      console.error("Error loading initial data:", error);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   // Handler for navigation
   const handleNavigate = (view: View) => {
@@ -30,24 +55,33 @@ function App() {
   };
 
   // Handler for search
-  const handleSearch = (query: string, genres: string[]) => {
-    let results = allMockMovies;
+  const handleSearch = async (query: string, genres: string[]) => {
+    setSearchLoading(true);
+    try {
+      let results: Movie[];
 
-    // Apply text search
-    if (query) {
-      results = searchMovies(results, query);
-    }
+      if (query || genres.length > 0) {
+        // Search with query and/or filters
+        results = await searchAndFilterMovies(query, genres);
+      } else {
+        // No search query or filters, show popular movies
+        results = await discoverMovies({
+          sortBy: "popularity.desc",
+          page: 1,
+        });
+      }
 
-    // Apply genre filters
-    if (genres.length > 0) {
-      results = filterMoviesByGenre(results, genres);
-    }
+      setSearchResults(results);
 
-    setSearchResults(results);
-
-    // Navigate to browse page when searching
-    if (currentView !== "browse") {
-      setCurrentView("browse");
+      // Navigate to browse page when searching from home
+      if (currentView === "home") {
+        setCurrentView("browse");
+      }
+    } catch (error) {
+      console.error("Error searching movies:", error);
+      setSearchResults([]);
+    } finally {
+      setSearchLoading(false);
     }
   };
 
@@ -58,30 +92,53 @@ function App() {
       newRatings.set(movieId, rating);
       return newRatings;
     });
+
+    // TODO: Send rating to backend API when available
+    console.log(`Rated movie ${movieId} with ${rating} stars`);
   };
 
   // Handler for adding to watchlist
   const handleAddToWatchlist = (movieId: number) => {
     setWatchlistIds((prev) => {
       if (prev.includes(movieId)) {
+        // Remove from watchlist
+        console.log(`Removed movie ${movieId} from watchlist`);
         return prev.filter((id) => id !== movieId);
       }
+      // Add to watchlist
+      console.log(`Added movie ${movieId} to watchlist`);
       return [...prev, movieId];
     });
+
+    // TODO: Send to backend API when available
   };
 
   // Handler for movie click (can be extended for modal/detail view)
   const handleMovieClick = (movieId: number) => {
     console.log("Movie clicked:", movieId);
     // TODO: Implement movie detail modal/page
+    // Can use getMovieDetails(movieId) from tmdb service
   };
 
-  // Get movies for different sections
-  const recommendedMovies = allMockMovies.slice(0, 10);
-  const trendingMovies = allMockMovies
-    .sort((a, b) => (b.popularity || 0) - (a.popularity || 0))
-    .slice(0, 10);
-  const watchlistMovies = getMoviesByIds(watchlistIds);
+  // Get watchlist movies
+  const watchlistMovies = recommendedMovies
+    .concat(trendingMovies)
+    .concat(searchResults)
+    .filter((movie, index, self) => {
+      // Remove duplicates and filter by watchlist IDs
+      return (
+        watchlistIds.includes(movie.id) &&
+        self.findIndex((m) => m.id === movie.id) === index
+      );
+    });
+
+  // Mock user data (can be replaced with real user data from backend)
+  const userData = {
+    userName: "Movie Enthusiast",
+    userEmail: "user@movielens.com",
+    ratedMoviesCount: ratedMovies.size,
+    favoriteGenres: ["Drama", "Science Fiction", "Thriller", "Action", "Crime"],
+  };
 
   return (
     <div className="min-h-screen bg-white">
@@ -96,6 +153,7 @@ function App() {
             onMovieClick={handleMovieClick}
             recommendedMovies={recommendedMovies}
             trendingMovies={trendingMovies}
+            loading={loading}
           />
         )}
 
@@ -106,19 +164,21 @@ function App() {
             onAddToWatchlist={handleAddToWatchlist}
             onMovieClick={handleMovieClick}
             movies={searchResults}
+            loading={searchLoading}
           />
         )}
 
         {currentView === "profile" && (
           <Profile
-            userName={mockUserData.userName}
-            userEmail={mockUserData.userEmail}
-            ratedMoviesCount={mockUserData.ratedMoviesCount + ratedMovies.size}
+            userName={userData.userName}
+            userEmail={userData.userEmail}
+            ratedMoviesCount={userData.ratedMoviesCount}
             watchlistMovies={watchlistMovies}
-            favoriteGenres={mockUserData.favoriteGenres}
+            favoriteGenres={userData.favoriteGenres}
             onRate={handleRate}
             onAddToWatchlist={handleAddToWatchlist}
             onMovieClick={handleMovieClick}
+            loading={false}
           />
         )}
       </main>
@@ -129,7 +189,7 @@ function App() {
           <div className="grid grid-cols-1 md:grid-cols-4 gap-8">
             <div>
               <div className="flex items-center gap-2 mb-4">
-                <div className="flex items-center justify-center w-10 h-10 bg-linear-to-br from-purple-600 to-pink-600 rounded-lg">
+                <div className="flex items-center justify-center w-10 h-10 bg-gradient-to-br from-purple-600 to-pink-600 rounded-lg">
                   <svg
                     className="w-6 h-6 text-white"
                     fill="none"
@@ -147,8 +207,8 @@ function App() {
                 <span className="font-bold text-xl">MovieLens</span>
               </div>
               <p className="text-gray-400 text-sm">
-                Personalized movie recommendations powered by millions of
-                ratings from movie enthusiasts worldwide.
+                Personalized movie recommendations powered by TMDB and millions
+                of ratings from movie enthusiasts worldwide.
               </p>
             </div>
 
@@ -257,12 +317,10 @@ function App() {
           </div>
 
           <div className="border-t border-gray-800 mt-8 pt-8 text-center text-sm text-gray-400">
-            <p>
-              © 2024 MovieLens Recommendation System. Part of GroupLens
-              Research Project.
-            </p>
+            <p>© 2024 MovieLens Recommendation System. Powered by TMDB API.</p>
             <p className="mt-2">
-              Powered by 33M+ ratings • 86K+ movies • 330K+ users
+              Data provided by The Movie Database (TMDB) • This product uses the
+              TMDB API but is not endorsed or certified by TMDB.
             </p>
           </div>
         </div>
